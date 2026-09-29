@@ -71,14 +71,24 @@
       scene.add(dirLight);
 
       const loader = new THREE.GLTFLoader();
-      loader.load('./pizza.glb', (gltf) => {
-        pizzaModel = gltf.scene;
-        pizzaModel.scale.set(1.0, 1.0, 1.0);
-        pizzaModel.visible = false; // hidden until tap-to-place
-        scene.add(pizzaModel);
-        setupTouchControls();
-        setupPlacementTap();
-      });
+      loader.load(
+        './pizza.glb',
+        (gltf) => {
+          pizzaModel = gltf.scene;
+          pizzaModel.scale.set(1.0, 1.0, 1.0); // hidden until tap-to-place
+          pizzaModel.visible = false;
+          scene.add(pizzaModel);
+          setupTouchControls();
+          setupPlacementTap();
+          document.getElementById('hint').innerText = 'Tap anywhere to place your pizza';
+        },
+        undefined,
+        (error) => {
+          document.getElementById('hint').innerText =
+            'FAILED TO LOAD pizza.glb — check the file exists and the name/path matches exactly (case-sensitive).';
+          console.error('GLTF load error:', error);
+        }
+      );
 
       window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
