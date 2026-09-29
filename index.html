@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: black; touch-action: none; }
+    #video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
+    canvas { position: fixed; top: 0; left: 0; z-index: 1; }
+    #startBtn {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+      padding: 14px 28px; font-size: 16px; background: #ff5a36; color: white;
+      border: none; border-radius: 8px; z-index: 9999; font-family: sans-serif;
+    }
+    #hint {
+      position: fixed; top: 20px; left: 0; right: 0; text-align: center;
+      color: white; font-family: sans-serif; font-size: 14px; text-shadow: 0 0 4px black;
+      z-index: 9999; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="hint">Tap "Start" to enable camera & sensors</div>
+  <button id="startBtn">Start AR</button>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script>
+    let scene, camera, renderer, pizzaModel;
+    let placed = false;
+
+    // ---- device orientation state (drives the camera, so the model stays
+    // anchored in world space and naturally leaves/re-enters view) ----
+    let rawAlpha = 0, rawBeta = 0, rawGamma = 0;
+    let smoothAlpha = 0, smoothBeta = 0, smoothGamma = 0;
+    const smoothingFactor = 0.15;
+    let deviceAlpha = 0, deviceBeta = 0, deviceGamma = 0;
+    let screenOrientAngle = 0;
+
+    const zee = new THREE.Vector3(0, 0, 1);
+    const euler = new THREE.Euler();
+    const q0 = new THREE.Quaternion();
+    const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }
+      });
+      document.getElementById('video').srcObject = stream;
+    }
+
+    function initThree() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+      scene.add(light);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+      dirLight.position.set(1, 1, 1);
+      scene.add(dirLight);
+
+      const loader = new THREE.GLTFLoader();
+      loader.load('./pizza.glb', (gltf) => {
+        pizzaModel = gltf.scene;
+        pizzaModel.scale.set(1.0, 1.0, 1.0);
+        pizzaModel.visible = false; // hidden until tap-to-place
+        scene.add(pizzaModel);
+        setupTouchControls();
+        setupPlacementTap();
+      });
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    }
+
+    function applyDeviceOrientationToCamera() {
+      const alpha = THREE.MathUtils.degToRad(deviceAlpha);
+      const beta = THREE.MathUtils.degToRad(deviceBeta);
+      const gamma = THREE.MathUtils.degToRad(deviceGamma);
+      const orient = THREE.MathUtils.degToRad(screenOrientAngle);
+
+      euler.set(beta, alpha, -gamma, 'YXZ');
+      camera.quaternion.setFromEuler(euler);
+      camera.quaternion.multiply(q1);
+      camera.quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
+    }
+
+    function handleOrientation(e) {
+      if (e.alpha === null) return;
+      rawAlpha = e.alpha;
+      rawBeta = e.beta;
+      rawGamma = e.gamma;
+
+      smoothAlpha += (rawAlpha - smoothAlpha) * smoothingFactor;
+      smoothBeta += (rawBeta - smoothBeta) * smoothingFactor;
+      smoothGamma += (rawGamma - smoothGamma) * smoothingFactor;
+
+      deviceAlpha = smoothAlpha;
+      deviceBeta = smoothBeta;
+      deviceGamma = smoothGamma;
+    }
+
+    function handleScreenOrientation() {
+      screenOrientAngle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+    }
+
+    // ---- tap to place: converts the tap point into a fixed WORLD position,
+    // using the camera's orientation at that exact moment ----
+    function setupPlacementTap() {
+      renderer.domElement.addEventListener('touchstart', (e) => {
+        if (placed || e.touches.length !== 1) return;
+
+        const touch = e.touches[0];
+        const ndcX = (touch.clientX / window.innerWidth) * 2 - 1;
+        const ndcY = -(touch.clientY / window.innerHeight) * 2 + 1;
+
+        const vector = new THREE.Vector3(ndcX, ndcY, 0.5);
+        vector.unproject(camera);
+        const dir = vector.sub(camera.position).normalize();
+        const distance = 1.5; // meters in front of camera at tap time
+        const targetPos = camera.position.clone().add(dir.multiplyScalar(distance));
+
+        pizzaModel.position.copy(targetPos);
+        pizzaModel.visible = true;
+        placed = true;
+        document.getElementById('hint').innerText =
+          '2 fingers: pinch to zoom, twist to rotate. 1 finger: drag to move.';
+      }, { passive: true, capture: true });
+    }
+
+    // ---- gestures: 2-finger pinch (scale) + twist (rotate) simultaneously,
+    // 1-finger drag to reposition ----
+    function setupTouchControls() {
+      const touchMap = new Map();
+      let previousDistance = null;
+      let previousAngle = null;
+      let dragTouchId = null;
+      let lastDragPos = null;
+
+      function getPair() { return Array.from(touchMap.values()); }
+      function getDistance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+      function getAngle(a, b) { return Math.atan2(b.y - a.y, b.x - a.x); }
+
+      renderer.domElement.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          touchMap.set(t.identifier, { x: t.clientX, y: t.clientY });
+        }
+        if (touchMap.size === 2) {
+          const [a, b] = getPair();
+          previousDistance = getDistance(a, b);
+          previousAngle = getAngle(a, b);
+          dragTouchId = null;
+        } else if (touchMap.size === 1) {
+          const id = touchMap.keys().next().value;
+          dragTouchId = id;
+          lastDragPos = { ...touchMap.get(id) };
+          previousDistance = null;
+          previousAngle = null;
+        }
+      }, { passive: false });
+
+      renderer.domElement.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          if (touchMap.has(t.identifier)) {
+            touchMap.set(t.identifier, { x: t.clientX, y: t.clientY });
+          }
+        }
+
+        if (touchMap.size === 2 && previousDistance !== null && pizzaModel) {
+          const [a, b] = getPair();
+
+          // pinch -> scale
+          const distance = getDistance(a, b);
+          let scaleFactor = distance / previousDistance;
+          scaleFactor = Math.min(Math.max(scaleFactor, 0.9), 1.1);
+          let newScale = pizzaModel.scale.x * scaleFactor;
+          newScale = Math.min(Math.max(newScale, 0.2), 6);
+          pizzaModel.scale.set(newScale, newScale, newScale);
+
+          // twist -> rotate, at the same time
+          const angle = getAngle(a, b);
+          let angleDelta = angle - previousAngle;
+          if (angleDelta > Math.PI) angleDelta -= 2 * Math.PI;
+          if (angleDelta < -Math.PI) angleDelta += 2 * Math.PI;
+          pizzaModel.rotation.y += angleDelta;
+
+          previousDistance = distance;
+          previousAngle = angle;
+        } else if (touchMap.size === 1 && dragTouchId !== null && touchMap.has(dragTouchId) && pizzaModel) {
+          const current = touchMap.get(dragTouchId);
+          const dx = current.x - lastDragPos.x;
+          const dy = current.y - lastDragPos.y;
+          const moveScale = 0.003;
+
+          const right = new THREE.Vector3();
+          const up = new THREE.Vector3();
+          camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
+
+          pizzaModel.position.addScaledVector(right, dx * moveScale);
+          pizzaModel.position.addScaledVector(up, -dy * moveScale);
+
+          lastDragPos = { ...current };
+        }
+      }, { passive: false });
+
+      renderer.domElement.addEventListener('touchend', (e) => {
+        for (const t of e.changedTouches) {
+          touchMap.delete(t.identifier);
+        }
+        if (touchMap.size < 2) { previousDistance = null; previousAngle = null; }
+        if (touchMap.size !== 1) {
+          dragTouchId = null;
+        } else {
+          dragTouchId = touchMap.keys().next().value;
+          lastDragPos = { ...touchMap.get(dragTouchId) };
+        }
+      }, { passive: false });
+    }
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+      await startCamera();
+      initThree();
+      handleScreenOrientation();
+      animate();
+
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        await DeviceOrientationEvent.requestPermission();
+      }
+      window.addEventListener('deviceorientation', handleOrientation);
+      window.addEventListener('orientationchange', handleScreenOrientation);
+
+      document.getElementById('startBtn').style.display = 'none';
+      document.getElementById('hint').innerText = 'Tap anywhere to place your pizza';
+    });
+
+    function animate() {
+      requestAnimationFrame(animate);
+      applyDeviceOrientationToCamera();
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
