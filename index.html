@@ -95,11 +95,16 @@
 
     function handleOrientation(e) {
       if (e.alpha === null) return;
-      rawAlpha = e.alpha;
-      rawBeta = e.beta;
-      rawGamma = e.gamma;
 
-      smoothAlpha += (rawAlpha - smoothAlpha) * smoothingFactor;
+      // Spike rejection: ignore a single-frame reading that jumps wildly
+      // (this is what causes "shaking" on devices with noisy magnetometers,
+      // e.g. budget phones with less-calibrated compass hardware)
+      const maxJump = 25; // degrees
+      if (smoothAlpha === 0 || angleDiff(e.alpha, smoothAlpha) < maxJump) rawAlpha = e.alpha;
+      if (smoothBeta === 0 || Math.abs(e.beta - smoothBeta) < maxJump) rawBeta = e.beta;
+      if (smoothGamma === 0 || Math.abs(e.gamma - smoothGamma) < maxJump) rawGamma = e.gamma;
+
+      smoothAlpha += angleDiff(rawAlpha, smoothAlpha) * smoothingFactor;
       smoothBeta += (rawBeta - smoothBeta) * smoothingFactor;
       smoothGamma += (rawGamma - smoothGamma) * smoothingFactor;
 
@@ -108,8 +113,29 @@
       deviceGamma = smoothGamma;
     }
 
+    // Handles the 0/360 wraparound correctly so smoothing doesn't spin the wrong way
+    function angleDiff(a, b) {
+      let d = a - b;
+      while (d > 180) d -= 360;
+      while (d < -180) d += 360;
+      return d;
+    }
+
+    // Robust screen-angle detection with fallbacks for devices/browsers
+    // that don't implement screen.orientation.angle correctly
+    function getScreenOrientationAngle() {
+      if (screen.orientation && typeof screen.orientation.angle === 'number') {
+        return screen.orientation.angle;
+      }
+      if (typeof window.orientation === 'number') {
+        return window.orientation;
+      }
+      // Last-resort guess from viewport shape
+      return window.innerWidth > window.innerHeight ? 90 : 0;
+    }
+
     function handleScreenOrientation() {
-      screenOrientAngle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+      screenOrientAngle = getScreenOrientationAngle();
     }
 
     // ---- tap to place: converts the tap point into a fixed WORLD position,
@@ -129,6 +155,7 @@
         const targetPos = camera.position.clone().add(dir.multiplyScalar(distance));
 
         pizzaModel.position.copy(targetPos);
+        pizzaModel.position.y -= 0.35; // settle it lower, so it reads as "resting on a surface" not floating at eye level
         pizzaModel.visible = true;
         placed = true;
         document.getElementById('hint').innerText =
@@ -239,6 +266,8 @@
       }
       window.addEventListener('deviceorientation', handleOrientation);
       window.addEventListener('orientationchange', handleScreenOrientation);
+      window.addEventListener('resize', handleScreenOrientation);
+      setInterval(handleScreenOrientation, 500); // safety net for devices that miss the event
 
       document.getElementById('startBtn').style.display = 'none';
       document.getElementById('hint').innerText = 'Tap anywhere to place your pizza';
