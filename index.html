@@ -17,11 +17,17 @@
       color: white; font-family: sans-serif; font-size: 14px; text-shadow: 0 0 4px black;
       z-index: 9999; pointer-events: none;
     }
+    #debug {
+      position: fixed; top: 60px; left: 0; right: 0; text-align: center;
+      color: #0f0; font-family: monospace; font-size: 12px; text-shadow: 0 0 4px black;
+      z-index: 9999; pointer-events: none; white-space: pre;
+    }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
   <div id="hint">Tap "Start" to enable camera & sensors</div>
+  <div id="debug"></div>
   <button id="startBtn">Start AR</button>
 
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -276,6 +282,10 @@
     function animate() {
       requestAnimationFrame(animate);
       applyDeviceOrientationToCamera();
+      document.getElementById('debug').innerText =
+        `raw a:${rawAlpha.toFixed(1)} b:${rawBeta.toFixed(1)} g:${rawGamma.toFixed(1)}\n` +
+        `smoothed a:${deviceAlpha.toFixed(1)} b:${deviceBeta.toFixed(1)} g:${deviceGamma.toFixed(1)}\n` +
+        `screenAngle:${screenOrientAngle} winOrientation:${window.orientation} innerW:${window.innerWidth} innerH:${window.innerHeight}`;
       renderer.render(scene, camera);
     }
   </script>
